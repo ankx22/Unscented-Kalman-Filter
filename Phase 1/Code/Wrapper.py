@@ -323,6 +323,28 @@ def madgwick(acc, gyro, vicon_rpy, timestamps):
     return resultant_quaternions
 
 
+def process_update(x_prevt, gyro, delta_t, P, Q):
+    n = 6
+    S = np.linalg.cholesky(P + Q)
+    W = np.hstack((-np.sqrt(n)*S, np.sqrt(n)*S))
+    sigma_points = []
+    tf_sigma_points = []
+    for i in range(2*n):
+        quat_vec = np.sin(
+            0.5*np.linalg.norm(W[0:3, i])*delta_t)*(W[0:3, i]/np.linalg.norm(W[0:3, i]))
+        qwi = np.transpose(np.array([np.cos(
+            0.5*np.linalg.norm(W[0:3, i])*delta_t), quat_vec[0], quat_vec[1], quat_vec[2]]))
+        omega_wi = np.transpose(np.array([W[3, i], W[4, i], W[5, i]]))
+        sigma_points.append(np.vstack((quat_multiply(
+            x_prevt[0:4, 0], qwi).reshape(-1, 1), (x_prevt[4:7, 0]+omega_wi).reshape(-1, 1))))
+        quat_angle = np.sin(
+            0.5*np.linalg.norm(x_prevt[4:7, 0])*delta_t)*(x_prevt[4:7, 0]/np.linalg.norm(x_prevt[4:7, 0]))
+        q_delta = np.transpose(np.array([np.cos(
+            0.5*np.linalg.norm(x_prevt[4:7, 0])*delta_t), quat_angle[0], quat_angle[1], quat_angle[2]]))
+        tf_sigma_points.append(np.vstack((quat_multiply((quat_multiply(
+            x_prevt[0:4, 0], qwi).reshape(-1, 1)), q_delta).reshape(-1, 1), (x_prevt[4:7, 0]+omega_wi).reshape(-1, 1))))
+
+
 def ukf(acc, gyro, vicon_rpy, timestamps):
     initial_orientation = np.array([np.average(vicon_rpy[0, 0:200]), np.average(
         vicon_rpy[1, 0:200]), np.average(vicon_rpy[2, 0:200])])
