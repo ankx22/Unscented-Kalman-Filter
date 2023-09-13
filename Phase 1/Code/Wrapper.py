@@ -1,3 +1,4 @@
+from rotplot import rotplot
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 from scipy import io
@@ -9,7 +10,6 @@ from PIL import Image
 
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from rotplot import rotplot
 
 
 def mat_to_angle(vicon_data):
@@ -237,7 +237,7 @@ def comp_filter(acc, gyro, vicon_rpy, timestamps):
     # Getting orientations from the filtered data
     # initial_orientation = np.array([np.average(vicon_rpy[0, 0:200]), np.average(
     #     vicon_rpy[1, 0:200]), np.average(vicon_rpy[2, 0:200])])
-    initial_orientation = np.array([0,0,0])
+    initial_orientation = np.array([0, 0, 0])
     gyro_orientations = only_gyro(
         gyro_filtered, initial_orientation, timestamps)
     acc_orientations = only_acc(acc_filtered)
@@ -268,7 +268,7 @@ def madgwick(acc, gyro, vicon_rpy, timestamps):
     # Getting orientations from the filtered data
     # initial_orientation = np.array([np.average(vicon_rpy[0, 0:200]), np.average(
     #     vicon_rpy[1, 0:200]), np.average(vicon_rpy[2, 0:200])])
-    initial_orientation = np.array([0,0,0])
+    initial_orientation = np.array([0, 0, 0])
     _, N = acc.shape  # Get the size of IMU data
 
     # Getting dt timesteps
@@ -323,7 +323,25 @@ def madgwick(acc, gyro, vicon_rpy, timestamps):
     return resultant_quaternions
 
 
-def animate(i,acc_orientations, gyro_orientations, comp_orientations,madg_orientations, vicon_mats):
+def ukf(acc, gyro, vicon_rpy, timestamps):
+    initial_orientation = np.array([np.average(vicon_rpy[0, 0:200]), np.average(
+        vicon_rpy[1, 0:200]), np.average(vicon_rpy[2, 0:200])])
+    _, N = acc.shape  # Get the size of IMU data
+    init_quat = to_quaternion(initial_orientation)
+    P = np.zeros((6, 6))
+    Q = np.diag([100, 100, 100, 1, 1, 1])
+    R = np.diag([10, 10, 10, 1, 1, 1])
+    # initial state vector
+    x_t = np.vstack((init_quat, gyro[:, 0]))
+    for i in range(N-1):
+        delta_t = timestamps[i+1] - timestamps[i]
+        # Function for process update
+        Wi, Yi, mu_bar, P_bar = process_update(x_t, gyro, delta_t, P, Q)
+        # Function for measurement update
+        x_t, P = measurement_update(Wi, Yi, mu_bar, P_bar, R, acc)
+
+
+def animate(i, acc_orientations, gyro_orientations, comp_orientations, madg_orientations, vicon_mats):
     """
     This function helps in creation of the videos.
 
@@ -332,19 +350,23 @@ def animate(i,acc_orientations, gyro_orientations, comp_orientations,madg_orient
     gyro_mats = angle_to_mat(gyro_orientations)
     comp_mats = angle_to_mat(comp_orientations)
     madg_mats = angle_to_mat(madg_orientations)
-    
-    ax1 = plt.subplot(151,projection='3d',title='gyro (i ='+str(i)+')',adjustable='datalim')
-    ax2 = plt.subplot(152, projection='3d',title='acc(i ='+str(i)+')',adjustable='datalim')
-    ax3 = plt.subplot(153, projection='3d',title='CF(i ='+str(i)+')',adjustable='datalim')
-    ax4 = plt.subplot(154, projection='3d',title='madg(i ='+str(i)+')',adjustable='datalim')
-    ax5 = plt.subplot(155, projection='3d',title='vicon(i ='+str(i)+')',adjustable='datalim')
-    
-    
-    rotplot(gyro_mats[:,:,10*i],ax1)
-    rotplot(acc_mats[:,:,10*i],ax2)
-    rotplot(comp_mats[:,:,10*i],ax3)
-    rotplot(madg_mats[:,:,10*i],ax4)
-    rotplot(vicon_mats[:,:,10*i],ax5)
+
+    ax1 = plt.subplot(151, projection='3d',
+                      title='gyro (i ='+str(i)+')', adjustable='datalim')
+    ax2 = plt.subplot(152, projection='3d',
+                      title='acc(i ='+str(i)+')', adjustable='datalim')
+    ax3 = plt.subplot(153, projection='3d',
+                      title='CF(i ='+str(i)+')', adjustable='datalim')
+    ax4 = plt.subplot(154, projection='3d',
+                      title='madg(i ='+str(i)+')', adjustable='datalim')
+    ax5 = plt.subplot(155, projection='3d',
+                      title='vicon(i ='+str(i)+')', adjustable='datalim')
+
+    rotplot(gyro_mats[:, :, 10*i], ax1)
+    rotplot(acc_mats[:, :, 10*i], ax2)
+    rotplot(comp_mats[:, :, 10*i], ax3)
+    rotplot(madg_mats[:, :, 10*i], ax4)
+    rotplot(vicon_mats[:, :, 10*i], ax5)
 
 
 def main():
@@ -369,8 +391,6 @@ def main():
     relativepath_IMUparams = 'IMUParams.mat'
     fullpath_IMUparams = os.path.join(
         absolute_path, '..', relativepath_IMUparams)
-
-    
 
     IMU_data = io.loadmat(fullpath_IMUdata)
     IMU_params = io.loadmat(fullpath_IMUparams)['IMUParams']
@@ -412,18 +432,18 @@ def main():
     omega_zxy = IMU_vals_converted[3:6, :]
     omega_xyz = np.array([omega_zxy[1, :], omega_zxy[2, :], omega_zxy[0, :]])
     gyro_orientaion = only_gyro(omega_xyz, initial_orientation, IMU_ts)
-    
+
     # only acceleration
     acc_orientation = only_acc(IMU_vals_converted[0:3, :])
 
     # Complimentary Filter
     comp_orientation = comp_filter(
         IMU_vals_converted[0:3, :], omega_xyz, vicon_rpy, IMU_ts)
-    
+
     # getting madgwick filter resultant quaternions
     q_vec = madgwick(IMU_vals_converted[0:3, :],
                      omega_xyz, vicon_rpy, IMU_ts)
-    
+
     # converting them to roll, pitch and yaw
     N = q_vec.shape[1]
     roll_angles = np.zeros(N)
@@ -472,13 +492,13 @@ def main():
     plt.ylabel("angles (rad)")
     plt.legend()
     plt.show()
-    
+
     # Creating videos (Please uncomment when using)
     # ani = animation.FuncAnimation(plt.gcf(), animate, frames=520, fargs=(
     #     acc_orientation, gyro_orientaion, comp_orientation, madgwick_orientation, vicon_rpy), repeat=False)
     # writervideo = animation.FFMpegWriter(fps=60)
     # ani.save('madgtrain6.mp4', writer=writervideo)
-   
+
 
 if __name__ == '__main__':
     main()
