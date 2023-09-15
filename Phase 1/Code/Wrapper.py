@@ -332,7 +332,7 @@ def normalize(v):
 
 def quaternion_inverse(q):
     # Calculate the magnitude squared of the quaternion
-    magnitude_squared = np.dot(q, q)
+    magnitude_squared = np.linalg.norm(q)**2
     
     # Check if the quaternion is close to zero
     if magnitude_squared < 1e-10:
@@ -400,7 +400,19 @@ def process_update(x_prevt, gyro, delta_t, P, Q):
             x_prevt[0:4, 0], qwi).reshape(-1, 1)), q_delta).reshape(-1, 1), (x_prevt[4:7, 0]+omega_wi).reshape(-1, 1))))
         
     mu_bar = intrinsicGradientDescent(tf_sigma_points)
-    
+    q_bar_inv = quaternion_inverse(mu_bar[0:4])
+    omega_bar = mu_bar[4:7]
+    W_prime = []
+    P_bar = np.zeros(7,7)
+    for i in range(len(tf_sigma_points)):
+        quat_comp = quat_multiply(tf_sigma_points[i][0:4],q_bar_inv)
+        omega_comp = tf_sigma_points[i][4:7] - omega_bar
+        Wi_prime = np.concatenate([quat_comp,omega_comp])
+        W_prime.append(Wi_prime)
+        P_bar += np.linalg.norm(Wi_prime)**2
+    P_bar = P_bar/2*n 
+
+
 
 
 def ukf(acc, gyro, vicon_rpy, timestamps):
