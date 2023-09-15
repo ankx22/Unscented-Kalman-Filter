@@ -2,6 +2,7 @@ from rotplot import rotplot
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 from scipy import io
+from scipy.spatial.transform import Rotation as R
 import numpy as np
 import time
 import sys
@@ -345,6 +346,14 @@ def quaternion_inverse(q):
     inverse = conjugate / magnitude_squared
     
     return inverse
+def vec_from_state(state):
+    """
+    input: state is an array of size (7,1)
+    """
+    r = R.from_quat(state[0:4].reshape(4,))
+    yaw, pitch, roll = r.as_euler('zyx', degrees=False)
+    vec = np.concatenate([np.array([roll,pitch,yaw]).reshape(-1,1),state[4:7]])
+    return vec
 
 
 def intrinsicGradientDescent(tf_sigma_points):
@@ -403,23 +412,63 @@ def process_update(x_prevt, gyro, delta_t, P, Q):
     q_bar_inv = quaternion_inverse(mu_bar[0:4])
     omega_bar = mu_bar[4:7]
     W_prime = []
-    P_bar = np.zeros(7,7)
+    P_bar = np.zeros((6,6))
     for i in range(len(tf_sigma_points)):
         quat_comp = quat_multiply(tf_sigma_points[i][0:4],q_bar_inv)
         omega_comp = tf_sigma_points[i][4:7] - omega_bar
-        Wi_prime = np.concatenate([quat_comp,omega_comp])
-        W_prime.append(Wi_prime)
-        P_bar += np.linalg.norm(Wi_prime)**2
-    P_bar = P_bar/2*n 
+        # Wi_prime = np.concatenate([quat_comp,omega_comp])
+        r = R.from_quat(quat_comp.reshape(4,))
+        yaw, pitch, roll = r.as_euler('zyx', degrees=False)
+        euler_array = np.array([roll,pitch,yaw]).reshape(-1,1)
+        Wi_prime_euler = np.concatenate([euler_array,omega_comp])
+        W_prime.append(Wi_prime_euler)
+        P_bar += np.dot(Wi_prime_euler,np.transpose(Wi_prime_euler))
+    P_bar = P_bar/2*n
+
+    return W_prime,tf_sigma_points,mu_bar,P_bar
 
 
+def measurement_update(W_prime,Y,R, P_prev, x_prev, z):
+    g_quat = np.array([0,0,0,1]).reshape(-1,1)
+    z_bar = []
+    z_bar_euler = []
+    z_bar_mean = np.zeros((7,1))
+    for i in range(len(Y)):
+        Yq = Y[i][0:4]
+        Yw = Y[i][4:7]
+        z_bar_quat = quat_multiply(quat_multiply(quaternion_inverse(Yq),g_quat),Yq)
+        z_bar.append(np.concatenate([z_bar_quat,Yw]))
+        z_bar_mean += np.concatenate([z_bar_quat,Yw])
+        z_bar_mean_i = vec_from_state(z_bar[i])
+        z_bar_euler.append(z_bar_mean_i)
+    z_bar_mean = z_bar_mean/len(Y)
+    z_bar_mean_euler = vec_from_state(z_bar_mean)
+    P_zz = np.zeros((6,6))
+    P_xz = np.zeros((6,6))
+    for i in range(len(Y)):
+        component1 = z_bar_mean_euler - z_bar_euler[i]
+        P_zz += np.dot(component1,component1.T)
+        P_xz += np.dot(W_prime[i], component1.T)
+    P_zz = P_zz/len(Y)
+    P_vv = P_zz + R
+    P_xz = P_xz/len(Y)
+    K = np.dot(P_xz, np.linalg.inv(P_vv))
+    P = P_prev - np.dot(np.dot(K, P_vv),K.T)
+    update_term = np.dot(K,(z - z_bar_mean_euler))
+    update_term_quat = np.concatenate([angle_to_quat(update_term[0:3]),update_term[3:6]])
+    x = x_prev + update_term_quat
+    return x, P
+         
 
+
+    
 
 def ukf(acc, gyro, vicon_rpy, timestamps):
     initial_orientation = np.array([np.average(vicon_rpy[0, 0:200]), np.average(
         vicon_rpy[1, 0:200]), np.average(vicon_rpy[2, 0:200])])
     _, N = acc.shape  # Get the size of IMU data
     init_quat = to_quaternion(initial_orientation)
+    z_stacked = np.vstack((acc, gyro))
     P = np.zeros((6, 6))
     Q = np.diag([100, 100, 100, 1, 1, 1])
     R = np.diag([10, 10, 10, 1, 1, 1])
@@ -430,7 +479,7 @@ def ukf(acc, gyro, vicon_rpy, timestamps):
         # Function for process update
         Wi, Yi, mu_bar, P_bar = process_update(x_t, gyro, delta_t, P, Q)
         # Function for measurement update
-        x_t, P = measurement_update(Wi, Yi, mu_bar, P_bar, R, acc)
+        x_t, P = measurement_update(Wi, Yi, R, P, x_t, z_stacked[:,i].reshape(-1,1))
 
 
 def animate(i, acc_orientations, gyro_orientations, comp_orientations, madg_orientations, vicon_mats):
