@@ -323,6 +323,61 @@ def madgwick(acc, gyro, vicon_rpy, timestamps):
     return resultant_quaternions
 
 
+def normalize(v):
+    norm=np.linalg.norm(v)
+    if norm==0:
+        norm=np.finfo(v.dtype).eps
+    return v/norm
+
+
+def quaternion_inverse(q):
+    # Calculate the magnitude squared of the quaternion
+    magnitude_squared = np.dot(q, q)
+    
+    # Check if the quaternion is close to zero
+    if magnitude_squared < 1e-10:
+        raise ValueError("Cannot compute the inverse of a zero quaternion")
+    
+    # Calculate the conjugate of the quaternion
+    conjugate = np.array([q[0], -q[1], -q[2], -q[3]])
+    
+    # Calculate the inverse
+    inverse = conjugate / magnitude_squared
+    
+    return inverse
+
+
+def intrinsicGradientDescent(tf_sigma_points):
+    """
+    Data: tf_sigma_points
+    result: mean of tf_sigma_points
+    """
+
+    qt_list = []
+    for i in range(len(tf_sigma_points)):
+        qt_list.append(tf_sigma_points[i][0:4,0])
+    qt = tf_sigma_points[0][0:4,0]
+    state_sum = sum(tf_sigma_points)
+    omega_bar = state_sum[4:7]/len(tf_sigma_points)
+    max_iter = 100 #tunable 
+    error_threshold = 1e-4 #tunable
+    current_iter = 0 
+    mean_quat_err = float('inf')
+    while current_iter < max_iter:
+        q_inv = quaternion_inverse(qt)
+        total_quat_err = np.zeros_like(qt)
+        for quat in qt_list:
+            err_quat = quat_multiply(quat,q_inv)    
+            total_quat_err += err_quat  
+        mean_quat_err = total_quat_err/len(tf_sigma_points)
+        qt = quat_multiply(mean_quat_err,qt)
+        current_iter += 1 
+        if current_iter == max_iter or np.linalg.norm(mean_quat_err) < error_threshold:
+            q_bar = qt 
+    return np.concatenate([q_bar, omega_bar])
+
+
+
 def process_update(x_prevt, gyro, delta_t, P, Q):
     n = 6
     S = np.linalg.cholesky(P + Q)
@@ -331,18 +386,21 @@ def process_update(x_prevt, gyro, delta_t, P, Q):
     tf_sigma_points = []
     for i in range(2*n):
         quat_vec = np.sin(
-            0.5*np.linalg.norm(W[0:3, i])*delta_t)*(W[0:3, i]/np.linalg.norm(W[0:3, i]))
+            0.5*np.linalg.norm(W[0:3, i])*delta_t)*normalize(W[0:3,i])
         qwi = np.transpose(np.array([np.cos(
             0.5*np.linalg.norm(W[0:3, i])*delta_t), quat_vec[0], quat_vec[1], quat_vec[2]]))
         omega_wi = np.transpose(np.array([W[3, i], W[4, i], W[5, i]]))
         sigma_points.append(np.vstack((quat_multiply(
             x_prevt[0:4, 0], qwi).reshape(-1, 1), (x_prevt[4:7, 0]+omega_wi).reshape(-1, 1))))
         quat_angle = np.sin(
-            0.5*np.linalg.norm(x_prevt[4:7, 0])*delta_t)*(x_prevt[4:7, 0]/np.linalg.norm(x_prevt[4:7, 0]))
+            0.5*np.linalg.norm(x_prevt[4:7, 0])*delta_t)*normalize(x_prevt[4:7, 0])
         q_delta = np.transpose(np.array([np.cos(
             0.5*np.linalg.norm(x_prevt[4:7, 0])*delta_t), quat_angle[0], quat_angle[1], quat_angle[2]]))
         tf_sigma_points.append(np.vstack((quat_multiply((quat_multiply(
             x_prevt[0:4, 0], qwi).reshape(-1, 1)), q_delta).reshape(-1, 1), (x_prevt[4:7, 0]+omega_wi).reshape(-1, 1))))
+        
+    mu_bar = intrinsicGradientDescent(tf_sigma_points)
+    
 
 
 def ukf(acc, gyro, vicon_rpy, timestamps):
@@ -354,7 +412,7 @@ def ukf(acc, gyro, vicon_rpy, timestamps):
     Q = np.diag([100, 100, 100, 1, 1, 1])
     R = np.diag([10, 10, 10, 1, 1, 1])
     # initial state vector
-    x_t = np.vstack((init_quat, gyro[:, 0]))
+    x_t = np.vstack((init_quat, gyro[:, 0].reshape(-1,1)))
     for i in range(N-1):
         delta_t = timestamps[i+1] - timestamps[i]
         # Function for process update
