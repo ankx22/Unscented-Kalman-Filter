@@ -371,7 +371,7 @@ def intrinsicGradientDescent(tf_sigma_points):
     qt = tf_sigma_points[0][0:4, 0]
     state_sum = sum(tf_sigma_points)
     omega_bar = state_sum[4:7]/len(tf_sigma_points)
-    max_iter = 10  # tunable
+    max_iter = 100  # tunable
     error_threshold = 1e-4  # tunable
     current_iter = 0
     mean_quat_err = float('inf')
@@ -401,14 +401,15 @@ def process_update(x_prevt, gyro, delta_t, P, Q):
         qwi = np.transpose(np.array([np.cos(
             0.5*np.linalg.norm(W[0:3, i])*delta_t), quat_vec[0], quat_vec[1], quat_vec[2]]))
         omega_wi = np.transpose(np.array([W[3, i], W[4, i], W[5, i]]))
+        # print(f"gyro shape: {gyro.shape} and x_prev = {x_prevt[4:7,0].shape}")
         sigma_points.append(np.vstack((quat_multiply(
-            x_prevt[0:4, 0], qwi).reshape(-1, 1), (x_prevt[4:7, 0]+omega_wi).reshape(-1, 1))))
+            x_prevt[0:4, 0], qwi).reshape(-1, 1), (gyro+omega_wi).reshape(-1, 1))))
         quat_angle = np.sin(
-            0.5*np.linalg.norm(x_prevt[4:7, 0])*delta_t)*normalize(x_prevt[4:7, 0])
+            0.5*np.linalg.norm(gyro)*delta_t)*normalize(gyro)
         q_delta = np.transpose(np.array([np.cos(
-            0.5*np.linalg.norm(x_prevt[4:7, 0])*delta_t), quat_angle[0], quat_angle[1], quat_angle[2]]))
+            0.5*np.linalg.norm(gyro)*delta_t), quat_angle[0], quat_angle[1], quat_angle[2]]))
         tf_sigma_points.append(np.vstack((quat_multiply((quat_multiply(
-            x_prevt[0:4, 0], qwi).reshape(-1, 1)), q_delta).reshape(-1, 1), (x_prevt[4:7, 0]+omega_wi).reshape(-1, 1))))
+            x_prevt[0:4, 0], qwi).reshape(-1, 1)), q_delta).reshape(-1, 1), (gyro+omega_wi).reshape(-1, 1))))
 
     mu_bar = intrinsicGradientDescent(tf_sigma_points)
     q_bar_inv = quaternion_inverse(mu_bar[0:4])
@@ -469,11 +470,12 @@ def ukf(acc, gyro, vicon_rpy, timestamps):
         vicon_rpy[1, 0:200]), np.average(vicon_rpy[2, 0:200])])
     _, N = acc.shape  # Get the size of IMU data
     init_quat = angle_to_quat(initial_orientation).reshape(-1,1)
-    print(init_quat.shape)
+    init_quat = normalize_quaternion(init_quat)
     z_stacked = np.vstack((acc, gyro))
     P = np.zeros((6, 6))
-    Q = np.diag([100, 100, 100, 1, 1, 1])
-    R = np.diag([10, 10, 10, 1, 1, 1])
+    P = 1e-2 * np.eye(6)
+    Q = np.diag([105, 105, 105, 0.5, 0.5, 0.5])
+    R = np.diag([11.2, 11.2, 11.2, 0.1, 0.1, 0.1])
     # initial state vector
     x_t = np.vstack((init_quat, gyro[:, 0].reshape(-1, 1)))
     ukf_quats = np.zeros((4, N))
@@ -482,12 +484,12 @@ def ukf(acc, gyro, vicon_rpy, timestamps):
 
         delta_t = timestamps[i+1] - timestamps[i]
         # Function for process update
-        Wi, Yi, mu_bar, P_bar = process_update(x_t, gyro, delta_t, P, Q)
+        Wi, Yi, mu_bar, P_bar = process_update(x_t, gyro[:,i], delta_t, P, Q)
         # Function for measurement update
         # x_t, P = measurement_update(Wi, Yi, mu_bar, P_bar, R, acc)
         x_t, P = measurement_update(
             Wi, Yi, R, P, x_t, z_stacked[:, i].reshape(-1, 1))
-        ukf_quats[:, i] = x_t[0:4].reshape(4,)
+        ukf_quats[:, i] = normalize_quaternion(x_t[0:4].reshape(4,))
 
     orientations = np.zeros((3,N))
     for i in range(N):
@@ -639,33 +641,33 @@ def main():
 
     ax1 = fig.add_subplot()
     ax1 = plt.subplot(3, 1, 1, title='Roll (X)')
-    # ax1.plot(vicon_ts[0], vicon_rpy[0, :], label='vicon')
-    ax1.plot(IMU_ts[0], gyro_orientaion[0, :], label='gyro')
-    ax1.plot(IMU_ts[0], acc_orientation[0, :], label='acc')
-    ax1.plot(IMU_ts[0], comp_orientation[0, :], label='comp')
-    ax1.plot(IMU_ts[0], madgwick_orientation[0, :], label='madg')
+    ax1.plot(vicon_ts[0], vicon_rpy[0, :], label='vicon')
+    # ax1.plot(IMU_ts[0], gyro_orientaion[0, :], label='gyro')
+    # ax1.plot(IMU_ts[0], acc_orientation[0, :], label='acc')
+    # ax1.plot(IMU_ts[0], comp_orientation[0, :], label='comp')
+    # ax1.plot(IMU_ts[0], madgwick_orientation[0, :], label='madg')
     ax1.plot(IMU_ts[0], ukf_orientation[0, :], label='ukf')
     plt.xlabel("timesteps")
     plt.ylabel("angles (rad)")
     plt.legend()
     ax2 = fig.add_subplot()
     ax2 = plt.subplot(3, 1, 2, title='Pitch (Y)')
-    # ax2.plot(vicon_ts[0], vicon_rpy[1, :], label='vicon')
-    ax2.plot(IMU_ts[0], gyro_orientaion[1, :], label='gyro')
-    ax2.plot(IMU_ts[0], acc_orientation[1, :], label='acc')
-    ax2.plot(IMU_ts[0], comp_orientation[1, :], label='comp')
-    ax2.plot(IMU_ts[0], madgwick_orientation[1, :], label='madg')
+    ax2.plot(vicon_ts[0], vicon_rpy[1, :], label='vicon')
+    # ax2.plot(IMU_ts[0], gyro_orientaion[1, :], label='gyro')
+    # ax2.plot(IMU_ts[0], acc_orientation[1, :], label='acc')
+    # ax2.plot(IMU_ts[0], comp_orientation[1, :], label='comp')
+    # ax2.plot(IMU_ts[0], madgwick_orientation[1, :], label='madg')
     ax2.plot(IMU_ts[0], ukf_orientation[1, :], label='ukf')
     plt.xlabel("timesteps")
     plt.ylabel("angles (rad)")
     plt.legend()
     ax3 = fig.add_subplot()
     ax3 = plt.subplot(3, 1, 3, title='Yaw (Z)')
-    # ax3.plot(vicon_ts[0], vicon_rpy[2, :], label='vicon')
-    ax3.plot(IMU_ts[0], gyro_orientaion[2, :], label='gyro')
-    ax3.plot(IMU_ts[0], acc_orientation[2, :], label='acc')
-    ax3.plot(IMU_ts[0], comp_orientation[2, :], label='comp')
-    ax3.plot(IMU_ts[0], madgwick_orientation[2, :], label='madg')
+    ax3.plot(vicon_ts[0], vicon_rpy[2, :], label='vicon')
+    # ax3.plot(IMU_ts[0], gyro_orientaion[2, :], label='gyro')
+    # ax3.plot(IMU_ts[0], acc_orientation[2, :], label='acc')
+    # ax3.plot(IMU_ts[0], comp_orientation[2, :], label='comp')
+    # ax3.plot(IMU_ts[0], madgwick_orientation[2, :], label='madg')
     ax3.plot(IMU_ts[0], ukf_orientation[2, :], label='ukf')
     fig.tight_layout()
     plt.xlabel("timesteps")
