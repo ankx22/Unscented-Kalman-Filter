@@ -1,16 +1,16 @@
-from rotplot import rotplot
-import matplotlib.animation as animation
-import matplotlib.pyplot as plt
-from scipy import io
-from scipy.spatial.transform import Rotation as R
-import numpy as np
-import time
-import sys
-import os
 from PIL import Image
-
+import os
+import sys
+import time
+import math
+import numpy as np
+from scipy.spatial.transform import Rotation as R
+from scipy import io
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from rotplot import rotplot
 
 
 def mat_to_angle(vicon_data):
@@ -53,10 +53,10 @@ def quat_multiply(q1, q2):
     """
     a1, a2, a3, a4 = q1[0], q1[1], q1[2], q1[3]
     b1, b2, b3, b4 = q2[0], q2[1], q2[2], q2[3]
-    return np.transpose(np.array([a1*b1 - a2*b2 - a3*b3 - a4*b4, a1*b2 + a2*b1 + a3*b4 - a4*b3, a1*b3 - a2*b4 + a3*b1 + a4*b2, a1*b4 + a2*b3 - a3*b2 + a4*b1]))
+    return np.array([a1*b1 - a2*b2 - a3*b3 - a4*b4, a1*b2 + a2*b1 + a3*b4 - a4*b3, a1*b3 - a2*b4 + a3*b1 + a4*b2, a1*b4 + a2*b3 - a3*b2 + a4*b1])
 
 
-def to_quaternion(rpy_orientation):
+def angle_to_quat(rpy_orientation):
     """
     Convert roll-pitch-yaw (Euler angles) to quaternion.
 
@@ -85,7 +85,7 @@ def to_quaternion(rpy_orientation):
     q.append(cr * sp * cy + sr * cp * sy)
     q.append(cr * cp * sy - sr * sp * cy)
 
-    return np.transpose(np.array(q))
+    return (np.array(q))
 
 
 def angle_to_mat(angles):
@@ -279,7 +279,7 @@ def madgwick(acc, gyro, vicon_rpy, timestamps):
         time_differences.append(time_diff)
 
     # get init orientation in quat (4x1)
-    init_quat = to_quaternion(initial_orientation)
+    init_quat = angle_to_quat(initial_orientation)
     beta = 0.1
     gyro_data = np.vstack((np.zeros(N), gyro))
     acc_data = np.vstack((np.zeros(N), acc))
@@ -325,34 +325,37 @@ def madgwick(acc, gyro, vicon_rpy, timestamps):
 
 
 def normalize(v):
-    norm=np.linalg.norm(v)
-    if norm==0:
-        norm=np.finfo(v.dtype).eps
+    norm = np.linalg.norm(v)
+    if norm == 0:
+        norm = np.finfo(v.dtype).eps
     return v/norm
 
 
 def quaternion_inverse(q):
     # Calculate the magnitude squared of the quaternion
     magnitude_squared = np.linalg.norm(q)**2
-    
+
     # Check if the quaternion is close to zero
     if magnitude_squared < 1e-10:
         raise ValueError("Cannot compute the inverse of a zero quaternion")
-    
+
     # Calculate the conjugate of the quaternion
     conjugate = np.array([q[0], -q[1], -q[2], -q[3]])
-    
+
     # Calculate the inverse
     inverse = conjugate / magnitude_squared
-    
+
     return inverse
+
+
 def vec_from_state(state):
     """
     input: state is an array of size (7,1)
     """
     r = R.from_quat(state[0:4].reshape(4,))
     yaw, pitch, roll = r.as_euler('zyx', degrees=False)
-    vec = np.concatenate([np.array([roll,pitch,yaw]).reshape(-1,1),state[4:7]])
+    vec = np.concatenate(
+        [np.array([roll, pitch, yaw]).reshape(-1, 1), state[4:7]])
     return vec
 
 
@@ -364,27 +367,26 @@ def intrinsicGradientDescent(tf_sigma_points):
 
     qt_list = []
     for i in range(len(tf_sigma_points)):
-        qt_list.append(tf_sigma_points[i][0:4,0])
-    qt = tf_sigma_points[0][0:4,0]
+        qt_list.append(tf_sigma_points[i][0:4, 0])
+    qt = tf_sigma_points[0][0:4, 0]
     state_sum = sum(tf_sigma_points)
     omega_bar = state_sum[4:7]/len(tf_sigma_points)
-    max_iter = 100 #tunable 
-    error_threshold = 1e-4 #tunable
-    current_iter = 0 
+    max_iter = 10  # tunable
+    error_threshold = 1e-4  # tunable
+    current_iter = 0
     mean_quat_err = float('inf')
     while current_iter < max_iter:
         q_inv = quaternion_inverse(qt)
         total_quat_err = np.zeros_like(qt)
         for quat in qt_list:
-            err_quat = quat_multiply(quat,q_inv)    
-            total_quat_err += err_quat  
+            err_quat = quat_multiply(quat, q_inv)
+            total_quat_err += err_quat
         mean_quat_err = total_quat_err/len(tf_sigma_points)
-        qt = quat_multiply(mean_quat_err,qt)
-        current_iter += 1 
+        qt = quat_multiply(mean_quat_err, qt)
+        current_iter += 1
         if current_iter == max_iter or np.linalg.norm(mean_quat_err) < error_threshold:
-            q_bar = qt 
+            q_bar = qt.reshape(-1,1)
     return np.concatenate([q_bar, omega_bar])
-
 
 
 def process_update(x_prevt, gyro, delta_t, P, Q):
@@ -395,7 +397,7 @@ def process_update(x_prevt, gyro, delta_t, P, Q):
     tf_sigma_points = []
     for i in range(2*n):
         quat_vec = np.sin(
-            0.5*np.linalg.norm(W[0:3, i])*delta_t)*normalize(W[0:3,i])
+            0.5*np.linalg.norm(W[0:3, i])*delta_t)*normalize(W[0:3, i])
         qwi = np.transpose(np.array([np.cos(
             0.5*np.linalg.norm(W[0:3, i])*delta_t), quat_vec[0], quat_vec[1], quat_vec[2]]))
         omega_wi = np.transpose(np.array([W[3, i], W[4, i], W[5, i]]))
@@ -407,79 +409,110 @@ def process_update(x_prevt, gyro, delta_t, P, Q):
             0.5*np.linalg.norm(x_prevt[4:7, 0])*delta_t), quat_angle[0], quat_angle[1], quat_angle[2]]))
         tf_sigma_points.append(np.vstack((quat_multiply((quat_multiply(
             x_prevt[0:4, 0], qwi).reshape(-1, 1)), q_delta).reshape(-1, 1), (x_prevt[4:7, 0]+omega_wi).reshape(-1, 1))))
-        
+
     mu_bar = intrinsicGradientDescent(tf_sigma_points)
     q_bar_inv = quaternion_inverse(mu_bar[0:4])
     omega_bar = mu_bar[4:7]
     W_prime = []
-    P_bar = np.zeros((6,6))
+    P_bar = np.zeros((6, 6))
     for i in range(len(tf_sigma_points)):
-        quat_comp = quat_multiply(tf_sigma_points[i][0:4],q_bar_inv)
+        quat_comp = quat_multiply(tf_sigma_points[i][0:4], q_bar_inv)
         omega_comp = tf_sigma_points[i][4:7] - omega_bar
         # Wi_prime = np.concatenate([quat_comp,omega_comp])
         r = R.from_quat(quat_comp.reshape(4,))
         yaw, pitch, roll = r.as_euler('zyx', degrees=False)
-        euler_array = np.array([roll,pitch,yaw]).reshape(-1,1)
-        Wi_prime_euler = np.concatenate([euler_array,omega_comp])
+        euler_array = np.array([roll, pitch, yaw]).reshape(-1, 1)
+        Wi_prime_euler = np.concatenate([euler_array, omega_comp])
         W_prime.append(Wi_prime_euler)
-        P_bar += np.dot(Wi_prime_euler,np.transpose(Wi_prime_euler))
+        P_bar += np.dot(Wi_prime_euler, np.transpose(Wi_prime_euler))
     P_bar = P_bar/2*n
 
-    return W_prime,tf_sigma_points,mu_bar,P_bar
+    return W_prime, tf_sigma_points, mu_bar, P_bar
 
 
-def measurement_update(W_prime,Y,R, P_prev, x_prev, z):
-    g_quat = np.array([0,0,0,1]).reshape(-1,1)
+def measurement_update(W_prime, Y, R, P_prev, x_prev, z):
+    g_quat = np.array([0, 0, 0, 1]).reshape(-1, 1)
     z_bar = []
     z_bar_euler = []
-    z_bar_mean = np.zeros((7,1))
+    z_bar_mean = np.zeros((7, 1))
     for i in range(len(Y)):
         Yq = Y[i][0:4]
         Yw = Y[i][4:7]
-        z_bar_quat = quat_multiply(quat_multiply(quaternion_inverse(Yq),g_quat),Yq)
-        z_bar.append(np.concatenate([z_bar_quat,Yw]))
-        z_bar_mean += np.concatenate([z_bar_quat,Yw])
+        z_bar_quat = quat_multiply(quat_multiply(
+            quaternion_inverse(Yq), g_quat), Yq)
+        z_bar.append(np.concatenate([z_bar_quat, Yw]))
+        z_bar_mean += np.concatenate([z_bar_quat, Yw])
         z_bar_mean_i = vec_from_state(z_bar[i])
         z_bar_euler.append(z_bar_mean_i)
     z_bar_mean = z_bar_mean/len(Y)
     z_bar_mean_euler = vec_from_state(z_bar_mean)
-    P_zz = np.zeros((6,6))
-    P_xz = np.zeros((6,6))
+    P_zz = np.zeros((6, 6))
+    P_xz = np.zeros((6, 6))
     for i in range(len(Y)):
         component1 = z_bar_mean_euler - z_bar_euler[i]
-        P_zz += np.dot(component1,component1.T)
+        P_zz += np.dot(component1, component1.T)
         P_xz += np.dot(W_prime[i], component1.T)
     P_zz = P_zz/len(Y)
     P_vv = P_zz + R
     P_xz = P_xz/len(Y)
     K = np.dot(P_xz, np.linalg.inv(P_vv))
-    P = P_prev - np.dot(np.dot(K, P_vv),K.T)
-    update_term = np.dot(K,(z - z_bar_mean_euler))
-    update_term_quat = np.concatenate([angle_to_quat(update_term[0:3]),update_term[3:6]])
+    P = P_prev - np.dot(np.dot(K, P_vv), K.T)
+    update_term = np.dot(K, (z - z_bar_mean_euler))
+    update_term_quat = np.concatenate(
+        [angle_to_quat(update_term[0:3]), update_term[3:6]])
     x = x_prev + update_term_quat
     return x, P
-         
 
-
-    
 
 def ukf(acc, gyro, vicon_rpy, timestamps):
     initial_orientation = np.array([np.average(vicon_rpy[0, 0:200]), np.average(
         vicon_rpy[1, 0:200]), np.average(vicon_rpy[2, 0:200])])
     _, N = acc.shape  # Get the size of IMU data
-    init_quat = to_quaternion(initial_orientation)
+    init_quat = angle_to_quat(initial_orientation).reshape(-1,1)
+    print(init_quat.shape)
     z_stacked = np.vstack((acc, gyro))
     P = np.zeros((6, 6))
     Q = np.diag([100, 100, 100, 1, 1, 1])
     R = np.diag([10, 10, 10, 1, 1, 1])
     # initial state vector
-    x_t = np.vstack((init_quat, gyro[:, 0].reshape(-1,1)))
+    x_t = np.vstack((init_quat, gyro[:, 0].reshape(-1, 1)))
+    ukf_quats = np.zeros((4, N))
+    ukf_quats[:, 0] = init_quat.reshape(4,)
     for i in range(N-1):
+
         delta_t = timestamps[i+1] - timestamps[i]
         # Function for process update
         Wi, Yi, mu_bar, P_bar = process_update(x_t, gyro, delta_t, P, Q)
         # Function for measurement update
-        x_t, P = measurement_update(Wi, Yi, R, P, x_t, z_stacked[:,i].reshape(-1,1))
+        # x_t, P = measurement_update(Wi, Yi, mu_bar, P_bar, R, acc)
+        x_t, P = measurement_update(
+            Wi, Yi, R, P, x_t, z_stacked[:, i].reshape(-1, 1))
+        ukf_quats[:, i] = x_t[0:4].reshape(4,)
+
+    orientations = np.zeros((3,N))
+    for i in range(N):
+        qw = ukf_quats[0,i]
+        qx = ukf_quats[1,i]
+        qy = ukf_quats[2,i]
+        qz = ukf_quats[3,i]
+        # r = R.from_quat([qw,qx,qy,qz])
+        # yaw, pitch, roll = r.as_euler('zyx', degrees=False)
+        roll = np.arctan2(2*(qw*qx + qy*qz),1-2*(qx*2 + qy*2))
+        sinp = 2*(qw*qy-qx*qz)
+        if abs(sinp) >= 1:
+            pitch = math.copysign(math.pi / 2, sinp)  # Use 90 degrees if out of range
+        else:
+            pitch = np.arcsin(sinp)
+        
+        yaw = np.arctan2(2*(qw*qz + qx*qy),1-2*(qy*2+qz*2))
+        
+        # orientations[0,i] = np.arctan2(2*(qw*qx + qy*qz),1-2*(qx*2 + qy*2))
+        # orientations[1,i] = np.arcsin(2*(qw*qy-qx*qz))
+        # orientations[2,i] = np.arctan2(2*(qw*qz + qx*qy),1-2*(qy*2+qz*2))
+        orientations[0,i] = roll
+        orientations[1,i] = pitch
+        orientations[2,i] = yaw
+    return orientations
 
 
 def animate(i, acc_orientations, gyro_orientations, comp_orientations, madg_orientations, vicon_mats):
@@ -511,38 +544,38 @@ def animate(i, acc_orientations, gyro_orientations, comp_orientations, madg_orie
 
 
 def main():
-    IMU_filename = "imuRaw7"
+    IMU_filename = "imuRaw1"
     vicon_filename = "viconRot1"
     # Loading the IMU data, parameters and Vicon Groundtruth data
     absolute_path = os.path.dirname(__file__)
 
-    # #Use this for train data
-    # relativepath_IMUdata = "Data/Train/IMU/"+IMU_filename+".mat"
-    # fullpath_IMUdata = os.path.join(absolute_path, '..', relativepath_IMUdata)
-    # relativepath_IMUparams = 'IMUParams.mat'
-    # fullpath_IMUparams = os.path.join(
-    #     absolute_path, '..', relativepath_IMUparams)
-
-    # relativepath_vicon = 'Data/Train/Vicon/'+vicon_filename+'.mat'
-    # fullpath_vicon = os.path.join(absolute_path, '..', relativepath_vicon)
-
-    # Use this for test data
-    relativepath_IMUdata = "Data/Test/IMU/"+IMU_filename+".mat"
+    #Use this for train data
+    relativepath_IMUdata = "Data/Train/IMU/"+IMU_filename+".mat"
     fullpath_IMUdata = os.path.join(absolute_path, '..', relativepath_IMUdata)
     relativepath_IMUparams = 'IMUParams.mat'
     fullpath_IMUparams = os.path.join(
         absolute_path, '..', relativepath_IMUparams)
 
+    relativepath_vicon = 'Data/Train/Vicon/'+vicon_filename+'.mat'
+    fullpath_vicon = os.path.join(absolute_path, '..', relativepath_vicon)
+
+    # Use this for test data
+    # relativepath_IMUdata = "Data/Test/IMU/"+IMU_filename+".mat"
+    # fullpath_IMUdata = os.path.join(absolute_path, '..', relativepath_IMUdata)
+    # relativepath_IMUparams = 'IMUParams.mat'
+    # fullpath_IMUparams = os.path.join(
+    #     absolute_path, '..', relativepath_IMUparams)
+
     IMU_data = io.loadmat(fullpath_IMUdata)
     IMU_params = io.loadmat(fullpath_IMUparams)['IMUParams']
-    # vicon_data = io.loadmat(fullpath_vicon)
+    vicon_data = io.loadmat(fullpath_vicon)
 
     # Seperating the timestamps and values for IMU and Vicon data
     # Each column represents the vector of six values (along the rows)
     IMU_vals = IMU_data['vals']
     IMU_ts = IMU_data['ts']
-    # vicon_rotmat = vicon_data['rots']  # ZYX Euler angles rotation matrix.
-    # vicon_ts = vicon_data['ts']
+    vicon_rotmat = vicon_data['rots']  # ZYX Euler angles rotation matrix.
+    vicon_ts = vicon_data['ts']
 
     # Converting the data to physical values with units
     # The bias of the gyroscope values is taken as the average of the first 200 gyroscope readings
@@ -563,8 +596,8 @@ def main():
 
     # Getting the orientations using different methods
     # Converting rotation matrices to roll,pitch,yaw
-    # vicon_rpy = mat_to_angle(vicon_rotmat)
-    vicon_rpy = np.array(([0, 0, 0]))
+    vicon_rpy = mat_to_angle(vicon_rotmat)
+    # vicon_rpy = np.array(([0, 0, 0]))
 
     # only gyroscope
     # initial_orientation = np.array([np.average(vicon_rpy[0, 0:200]), np.average(
@@ -598,6 +631,9 @@ def main():
         yaw_angles[i] = yaw
     # Roll, Pitch and yaw using madgwick filter
     madgwick_orientation = np.vstack((roll_angles, pitch_angles, yaw_angles))
+    # Roll, Pitch and yaw using ukf filter
+    ukf_orientation = ukf(
+        IMU_vals_converted[0:3, :], omega_xyz, vicon_rpy, IMU_ts[0, :])
     # Plotting the orientations obtained from different methods
     fig = plt.figure(figsize=(10, 10))
 
@@ -608,6 +644,7 @@ def main():
     ax1.plot(IMU_ts[0], acc_orientation[0, :], label='acc')
     ax1.plot(IMU_ts[0], comp_orientation[0, :], label='comp')
     ax1.plot(IMU_ts[0], madgwick_orientation[0, :], label='madg')
+    ax1.plot(IMU_ts[0], ukf_orientation[0, :], label='ukf')
     plt.xlabel("timesteps")
     plt.ylabel("angles (rad)")
     plt.legend()
@@ -618,6 +655,7 @@ def main():
     ax2.plot(IMU_ts[0], acc_orientation[1, :], label='acc')
     ax2.plot(IMU_ts[0], comp_orientation[1, :], label='comp')
     ax2.plot(IMU_ts[0], madgwick_orientation[1, :], label='madg')
+    ax2.plot(IMU_ts[0], ukf_orientation[1, :], label='ukf')
     plt.xlabel("timesteps")
     plt.ylabel("angles (rad)")
     plt.legend()
@@ -628,6 +666,7 @@ def main():
     ax3.plot(IMU_ts[0], acc_orientation[2, :], label='acc')
     ax3.plot(IMU_ts[0], comp_orientation[2, :], label='comp')
     ax3.plot(IMU_ts[0], madgwick_orientation[2, :], label='madg')
+    ax3.plot(IMU_ts[0], ukf_orientation[2, :], label='ukf')
     fig.tight_layout()
     plt.xlabel("timesteps")
     plt.ylabel("angles (rad)")
