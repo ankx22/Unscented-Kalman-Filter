@@ -204,62 +204,52 @@ def process_update(x_prevt, gyro, delta_t, P, Q):
             (X_qi[:, i].reshape(-1, 1), X_wi[:, i].reshape(-1, 1))).flatten()
         w = sigma_points[4:7, i]
         delta_q = qfromRV(w, delta_t)
-        Y_qi[:,i] = quat_multiply(sigma_points[0:4,i],delta_q)
+        Y_qi[:, i] = quat_multiply(sigma_points[0:4, i], delta_q)
     Y_wi = sigma_points[4:7, :]
-    tf_sigma_points = np.vstack((Y_qi,Y_wi))
+    tf_sigma_points = np.vstack((Y_qi, Y_wi))
+    # print(tf_sigma_points)
 
-    mu_bar = intrinsicGradientDescent(tf_sigma_points, sigma_points[:,0])
+    mu_bar = intrinsicGradientDescent(tf_sigma_points, sigma_points[:, 0])
     q_bar_inv = quaternion_inverse(mu_bar[0:4])
-    omega_bar = mu_bar[4:7]
-    W_prime = []
-    P_bar = np.zeros((6, 6))
-    for i in range(len(tf_sigma_points)):
-        quat_comp = quat_multiply(tf_sigma_points[i][0:4], q_bar_inv)
-        omega_comp = tf_sigma_points[i][4:7] - omega_bar
-        # Wi_prime = np.concatenate([quat_comp,omega_comp])
-        r = R.from_quat(quat_comp.reshape(4,))
-        yaw, pitch, roll = r.as_euler('zyx', degrees=False)
-        euler_array = np.array([roll, pitch, yaw]).reshape(-1, 1)
-        Wi_prime_euler = np.concatenate([euler_array, omega_comp])
-        W_prime.append(Wi_prime_euler)
-        P_bar += np.dot(Wi_prime_euler, np.transpose(Wi_prime_euler))
-    P_bar = P_bar/2*n
-
+    # print(mu_bar)
+    W_prime = np.zeros((6, tf_sigma_points.shape[1]))
+    for i in range(tf_sigma_points.shape[1]):
+        quat = quat_multiply(quaternion_inverse(
+            mu_bar[0:4]), tf_sigma_points[0:4, i])
+        W_prime[0:3, i] = quat2RV(quat)
+    W_prime[3:7, :] = W[3:6, :] - mu_bar[4:7].reshape(-1, 1)
+    # print(W_prime)
+    P_bar = np.float64((1/W_prime.shape[1])) * np.dot(W_prime, W_prime.T)
+    # print(P_bar)
     return W_prime, tf_sigma_points, mu_bar, P_bar
 
 
-def measurement_update(W_prime, Y, R, P_prev, x_prev, z):
-    g_quat = np.array([0, 0, 0, 1]).reshape(-1, 1)
-    print(f"g shape: {g_quat[0,3]}")
-    z_bar = []
-    z_bar_euler = []
-    z_bar_mean = np.zeros((7, 1))
-    for i in range(len(Y)):
-        Yq = Y[i][0:4]
-        Yw = Y[i][4:7]
-        z_bar_quat = quat_multiply(quat_multiply(
-            quaternion_inverse(Yq), g_quat), Yq)
-        z_bar.append(np.concatenate([z_bar_quat, Yw]))
-        z_bar_mean += np.concatenate([z_bar_quat, Yw])
-        z_bar_mean_i = vec_from_state(z_bar[i])
-        z_bar_euler.append(z_bar_mean_i)
-    z_bar_mean = z_bar_mean/len(Y)
-    z_bar_mean_euler = vec_from_state(z_bar_mean)
-    P_zz = np.zeros((6, 6))
-    P_xz = np.zeros((6, 6))
-    for i in range(len(Y)):
-        component1 = z_bar_mean_euler - z_bar_euler[i]
-        P_zz += np.dot(component1, component1.T)
-        P_xz += np.dot(W_prime[i], component1.T)
-    P_zz = P_zz/len(Y)
+def measurement_update(W_prime, tf_sigma_points, R, P_prev, x_prev, z, mu_bar):
+    g_quat = np.array([0, 0, 0, 1], dtype=np.float64)
+    Z = np.zeros((6, tf_sigma_points.shape[1]))
+    for i in range(tf_sigma_points.shape[1]):
+        Z_q = quat_multiply(quat_multiply(
+            quaternion_inverse(tf_sigma_points[0:4, i]), g_quat), tf_sigma_points[0:4, i])
+        Z[0:3, i] = quat2RV(Z_q)
+    Z[3:6, :] = tf_sigma_points[4:7, :]
+    Z_mean = np.mean(Z, axis=1)
+    difference = Z - Z_mean.reshape(-1, 1)
+    P_zz = (1/tf_sigma_points.shape[1])*np.dot(difference, difference.T)
     P_vv = P_zz + R
-    P_xz = P_xz/len(Y)
+    P_xz = (1/tf_sigma_points.shape[1]) * np.dot(W_prime, difference.T)
     K = np.dot(P_xz, np.linalg.inv(P_vv))
+    # print(P_prev)
     P = P_prev - np.dot(np.dot(K, P_vv), K.T)
-    update_term = np.dot(K, (z - z_bar_mean_euler))
-    update_term_quat = np.concatenate(
-        [angle_to_quat(update_term[0:3]), update_term[3:6]])
-    x = x_prev + update_term_quat
+    vk = z - Z_mean.reshape(-1, 1)
+    # print(vk.shape)
+    increment = np.zeros(7,)
+    term = np.dot(K, vk)
+    increment[0:4] = qfromRV(term[0:3].reshape(-1,))
+    increment[4:7] = term[3:6].reshape(-1,)
+    x = np.zeros((7,))
+    x[0:4] = quat_multiply(mu_bar[0:4], increment[0:4])
+    x[4:7] = increment[4:7]
+
     return x, P
 
 
@@ -272,6 +262,7 @@ def ukf(acc, gyro, vicon_rpy, timestamps):
     # init_quat = normalize(init_quat)
     z_stacked = np.vstack((acc, gyro))
     P = 1e-2 * np.eye(6)
+    # print(P)
     Q = np.diag([100, 100, 100, 0.1, 0.1, 0.1])
     R = np.diag([0.5, 0.5, 0.5, 0.01, 0.01, 0.01])
     # initial state vector
@@ -285,12 +276,16 @@ def ukf(acc, gyro, vicon_rpy, timestamps):
         else:
             delta_t = timestamps[i+1] - timestamps[i]
         # Function for process update
-        Wi, Yi, P_bar = process_update(x_t, gyro[:, i], delta_t, P, Q)
+        W_prime, tf_sigma_points, mu_bar, P_bar = process_update(
+            x_t, gyro[:, i], delta_t, P, Q)
+        # print(mu_bar[4:7])
         # Function for measurement update
         # x_t, P = measurement_update(Wi, Yi, mu_bar, P_bar, R, acc)
         x_t, P = measurement_update(
-            Wi, Yi, R, P, x_t, z_stacked[:, i].reshape(-1, 1))
+            W_prime, tf_sigma_points, R, P_bar, x_t, z_stacked[:, i].reshape(-1, 1), mu_bar)
         ukf_quats[:, i] = normalize(x_t[0:4].reshape(4,))
+        # print(P)
+        # a = 2
 
     orientations = np.zeros((3, N))
     for i in range(N):

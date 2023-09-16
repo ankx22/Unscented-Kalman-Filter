@@ -157,6 +157,10 @@ def qfromRV(eul_angles, dtt=1.0):
 
 
 def normalize(v):
+    """
+    input: vector v
+    output: normalized vector v
+    """
     norm = np.linalg.norm(v)
     if norm == 0:
         norm = np.finfo(v.dtype).eps
@@ -189,7 +193,7 @@ def intrinsicGradientDescent(tf_sigma_points, sigma_point):
     current_iter = 0
     max_iter = 100  # tunable
     mean_error = np.array([10000., 10000., 10000.])
-    error_threshold = 1e-4  # tunable
+    error_threshold = 1e-5  # tunable
     error_vector = np.zeros((3, 12))
     while np.linalg.norm(mean_error) > error_threshold and current_iter < max_iter:
         for i in range(tf_sigma_points.shape[1]):
@@ -200,9 +204,11 @@ def intrinsicGradientDescent(tf_sigma_points, sigma_point):
         mean_error_quat = qfromRV(mean_error)
         q_bar = quat_multiply(mean_error_quat, q_bar)
         q_bar = normalize(q_bar)
+        # print(q_bar)
         current_iter += 1
     omega_bar = (
         1/float(tf_sigma_points.shape[1]))*np.mean(tf_sigma_points[4:7, :], axis=1)
+    # print(np.mean(tf_sigma_points[4:7, :], axis=1))
     result = np.vstack(
         (q_bar.reshape(-1, 1), omega_bar.reshape(-1, 1))).reshape(-1,)
     return result
